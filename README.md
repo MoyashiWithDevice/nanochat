@@ -215,7 +215,7 @@ nanochatが研究に役立った場合、以下のように引用してくださ
   title = {nanochat: The best ChatGPT that \$100 can buy},
   year = {2025},
   publisher = {GitHub},
-  url = {https://github.com/MoyashiWithDevice/nanochat}
+  url = {https://github.com/karpathy/nanochat}
 }
 ```
 
@@ -436,7 +436,7 @@ If you find nanochat helpful in your research cite simply as:
   title = {nanochat: The best ChatGPT that \$100 can buy},
   year = {2025},
   publisher = {GitHub},
-  url = {https://github.com/MoyashiWithDevice/nanochat}
+  url = {https://github.com/karpathy/nanochat}
 }
 ```
 
