@@ -9,14 +9,12 @@ Or torchrun for training:
 torchrun --standalone --nproc_per_node=8 -m scripts.chat_sft -- --device-batch-size=16
 """
 
-import gc
 import argparse
 import os
 os.environ["PYTORCH_ALLOC_CONF"] = "expandable_segments:True"
 import time
-import wandb
 import torch
-from nanochat.common import compute_init, compute_cleanup, print0, DummyWandb, get_base_dir, autodetect_device_type, get_peak_flops, COMPUTE_DTYPE, COMPUTE_DTYPE_REASON, is_ddp_initialized
+from nanochat.common import compute_init, compute_cleanup, print0, get_base_dir, autodetect_device_type, COMPUTE_DTYPE, COMPUTE_DTYPE_REASON, init_wandb, get_gpu_info, init_grad_scaler, optimizer_step_with_scaler, manage_gc, compute_training_metrics
 from nanochat.tokenizer import get_token_bytes
 from nanochat.checkpoint_manager import save_checkpoint, load_model, load_optimizer_state
 from nanochat.loss_eval import evaluate_bpb
@@ -77,16 +75,10 @@ master_process = ddp_rank == 0
 print0(f"COMPUTE_DTYPE: {COMPUTE_DTYPE} ({COMPUTE_DTYPE_REASON})")
 synchronize = torch.cuda.synchronize if device_type == "cuda" else lambda: None
 get_max_memory = torch.cuda.max_memory_allocated if device_type == "cuda" else lambda: 0
-if device_type == "cuda":
-    gpu_device_name = torch.cuda.get_device_name(0)
-    gpu_peak_flops = get_peak_flops(gpu_device_name)
-    print0(f"GPU: {gpu_device_name} | Peak FLOPS (BF16): {gpu_peak_flops:.2e}")
-else:
-    gpu_peak_flops = float('inf')  # MFU not meaningful for CPU/MPS
+_, gpu_peak_flops = get_gpu_info(device_type)
 
 # wandb logging init
-use_dummy_wandb = args.run == "dummy" or not master_process
-wandb_run = DummyWandb() if use_dummy_wandb else wandb.init(project="nanochat-sft", name=args.run, config=user_config)
+wandb_run = init_wandb("nanochat-sft", args.run, user_config, master_process)
 
 # Flash Attention status
 if not HAS_FA3:
@@ -151,9 +143,7 @@ if args.load_optimizer:
         print0("WARNING: optimizer checkpoint not found, starting with fresh optimizer (slightly worse)")
 
 # GradScaler for fp16 training (bf16/fp32 don't need it)
-scaler = torch.amp.GradScaler() if COMPUTE_DTYPE == torch.float16 else None
-if scaler is not None:
-    print0("GradScaler enabled for fp16 training")
+scaler = init_grad_scaler()
 
 # Override the initial learning rate as a fraction of the base learning rate
 for group in optimizer.param_groups:
@@ -446,16 +436,7 @@ while True:
         group["lr"] = group["initial_lr"] * lrm
         if group['kind'] == 'muon':
             group["momentum"] = muon_momentum
-    if scaler is not None:
-        scaler.unscale_(optimizer)
-        if is_ddp_initialized():
-            for v in scaler._found_inf_per_device(optimizer).values():
-                dist.all_reduce(v, op=dist.ReduceOp.MAX)
-        scaler.step(optimizer)
-        scaler.update()
-    else:
-        optimizer.step()
-    model.zero_grad(set_to_none=True)
+    optimizer_step_with_scaler(optimizer, scaler, model)
     synchronize()
     t1 = time.time()
     dt = t1 - t0
@@ -468,9 +449,7 @@ while True:
     smooth_train_loss = ema_beta * smooth_train_loss + (1 - ema_beta) * train_loss.item() # EMA the training loss
     debiased_smooth_loss = smooth_train_loss / (1 - ema_beta**(step + 1)) # debias the EMA
     pct_done = 100 * progress
-    tok_per_sec = int(args.total_batch_size / dt)
-    flops_per_sec = num_flops_per_token * args.total_batch_size / dt
-    mfu = 100 * flops_per_sec / (gpu_peak_flops * ddp_world_size)
+    tok_per_sec, mfu = compute_training_metrics(args.total_batch_size, dt, num_flops_per_token, gpu_peak_flops, ddp_world_size)
     if step > 10:
         total_training_time += dt # only count the time after the first 10 steps
     print0(f"step {step:05d} ({pct_done:.2f}%) | loss: {debiased_smooth_loss:.6f} | lrm: {lrm:.2f} | dt: {dt * 1000:.2f}ms | tok/sec: {tok_per_sec:,} | mfu: {mfu:.2f} | epoch: {current_epoch} | total time: {total_training_time/60:.2f}m")
@@ -487,14 +466,8 @@ while True:
             "train/epoch": current_epoch,
         })
 
-    # The garbage collector spends ~500ms scanning for cycles quite frequently.
-    # We manually manage it to avoid these pauses during training.
-    if step == 1:
-        gc.collect() # manually collect a lot of garbage from setup
-        gc.freeze() # freeze all currently surviving objects and exclude them from GC
-        gc.disable() # disable GC entirely except:
-    elif step % 5000 == 0: # every 5000 steps...
-        gc.collect() # manually collect, just to be safe for very long runs
+    # Manage GC to avoid costly pauses during training
+    manage_gc(step, initial_step=(step == 1))
 
 # print a few more stats
 print0(f"Peak memory usage: {get_max_memory() / 1024 / 1024:.2f}MiB")

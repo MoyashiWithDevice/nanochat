@@ -6,7 +6,7 @@ python -m scripts.chat_cli
 """
 import argparse
 import torch
-from nanochat.common import compute_init, autodetect_device_type
+from nanochat.common import compute_init, autodetect_device_type, build_conversation_tokens
 from nanochat.engine import Engine
 from nanochat.checkpoint_manager import load_model
 
@@ -27,9 +27,7 @@ ddp, ddp_rank, ddp_local_rank, ddp_world_size, device = compute_init(device_type
 model, tokenizer, meta = load_model(args.source, device, phase="eval", model_tag=args.model_tag, step=args.step)
 
 # Special tokens for the chat state machine
-bos = tokenizer.get_bos_token_id()
-user_start, user_end = tokenizer.encode_special("<|user_start|>"), tokenizer.encode_special("<|user_end|>")
-assistant_start, assistant_end = tokenizer.encode_special("<|assistant_start|>"), tokenizer.encode_special("<|assistant_end|>")
+assistant_end = tokenizer.encode_special("<|assistant_end|>")
 
 # Create Engine for efficient generation
 engine = Engine(model, tokenizer)
@@ -40,7 +38,7 @@ print("Type 'quit' or 'exit' to end the conversation")
 print("Type 'clear' to start a new conversation")
 print("-" * 50)
 
-conversation_tokens = [bos]
+conversation_history = [] # list of {"role": ..., "content": ...} dicts
 
 while True:
 
@@ -61,20 +59,19 @@ while True:
         break
 
     if user_input.lower() == 'clear':
-        conversation_tokens = [bos]
+        conversation_history = []
         print("Conversation cleared.")
         continue
 
     if not user_input:
         continue
 
-    # Add User message to the conversation
-    conversation_tokens.append(user_start)
-    conversation_tokens.extend(tokenizer.encode(user_input))
-    conversation_tokens.append(user_end)
+    # Add User message to the conversation history
+    conversation_history.append({"role": "user", "content": user_input})
 
-    # Kick off the assistant
-    conversation_tokens.append(assistant_start)
+    # Build token sequence from conversation history
+    conversation_tokens = build_conversation_tokens(tokenizer, conversation_history)
+
     generate_kwargs = {
         "num_samples": 1,
         "max_tokens": 256,
@@ -93,7 +90,9 @@ while True:
     # so even if generation ends due to max tokens, we have to append it to the end
     if response_tokens[-1] != assistant_end:
         response_tokens.append(assistant_end)
-    conversation_tokens.extend(response_tokens)
+    # Decode the response and add to history
+    response_text = tokenizer.decode([t for t in response_tokens if t != assistant_end])
+    conversation_history.append({"role": "assistant", "content": response_text})
 
     # In the prompt mode, we only want a single response and exit
     if args.prompt:

@@ -11,9 +11,8 @@ torchrun --nproc_per_node=8 -m scripts.chat_eval -- -a ARC-Easy
 import argparse
 from functools import partial
 import torch
-import torch.distributed as dist
 
-from nanochat.common import compute_init, compute_cleanup, get_dist_info, print0, autodetect_device_type
+from nanochat.common import compute_init, compute_cleanup, get_dist_info, print0, autodetect_device_type, ddp_all_reduce_sum
 from nanochat.checkpoint_manager import load_model
 from nanochat.engine import Engine
 
@@ -66,13 +65,8 @@ def run_generative_eval(task_object, tokenizer, model, engine, num_samples, max_
     print()
 
     # Aggregate results across all ranks
-    if ddp:
-        num_passed_tensor = torch.tensor([num_passed], dtype=torch.long, device=device)
-        total_tensor = torch.tensor([total], dtype=torch.long, device=device)
-        dist.all_reduce(num_passed_tensor, op=dist.ReduceOp.SUM)
-        dist.all_reduce(total_tensor, op=dist.ReduceOp.SUM)
-        num_passed = num_passed_tensor.item()
-        total = total_tensor.item()
+    reduced = ddp_all_reduce_sum({"num_passed": num_passed, "total": total}, device, ddp)
+    num_passed, total = int(reduced["num_passed"]), int(reduced["total"])
 
     print0("=" * 50)
     print0(f"Final: {num_passed}/{total} ({100*num_passed/total:.2f}%)")
@@ -140,13 +134,8 @@ def run_categorical_eval(task_object, tokenizer, model, batch_size, max_problems
             total += 1
 
     # Aggregate results across all ranks
-    if ddp:
-        num_passed_tensor = torch.tensor([num_passed], dtype=torch.long, device=device)
-        total_tensor = torch.tensor([total], dtype=torch.long, device=device)
-        dist.all_reduce(num_passed_tensor, op=dist.ReduceOp.SUM)
-        dist.all_reduce(total_tensor, op=dist.ReduceOp.SUM)
-        num_passed = num_passed_tensor.item()
-        total = total_tensor.item()
+    reduced = ddp_all_reduce_sum({"num_passed": num_passed, "total": total}, device, ddp)
+    num_passed, total = int(reduced["num_passed"]), int(reduced["total"])
 
     average = num_passed/total
     print0(f"Final: {num_passed}/{total} ({100*average:.2f}%)")
