@@ -5,7 +5,7 @@
 
 nanochat is the simplest experimental harness for training LLMs. It is designed to run on a single GPU node, the code is minimal/hackable, and it covers all major LLM stages including tokenization, pretraining, finetuning, evaluation, inference, and a chat UI. For example, you can train your own GPT-2 capability LLM (which cost ~$43,000 to train in 2019) for only $48 (~2 hours of 8XH100 GPU node) and then talk to it in a familiar ChatGPT-like web UI. On a spot instance, the total cost can be closer to ~$15. More generally, nanochat is configured out of the box to train an entire miniseries of compute-optimal models by setting one single complexity dial: `--depth`, the number of layers in the GPT transformer model (GPT-2 capability happens to be approximately depth 26). All other hyperparameters (the width of the transformer, number of heads, learning rate adjustments, training horizons, weight decays, ...) are calculated automatically in an optimal way.
 
-For questions about the repo, I recommend either using [DeepWiki](https://deepwiki.com/karpathy/nanochat) from Devin/Cognition to ask questions about the repo, or use the [Discussions tab](https://github.com/karpathy/nanochat/discussions), or come by the [#nanochat](https://discord.com/channels/1020383067459821711/1427295580895314031) channel on Discord.
+For questions about the repo, I recommend either using [DeepWiki](https://deepwiki.com/MoyashiWithDevice/nanochat) from Devin/Cognition to ask questions about the repo, or use the [Discussions tab](https://github.com/MoyashiWithDevice/nanochat/discussions), or come by the [#nanochat](https://discord.com/channels/1020383067459821711/1427295580895314031) channel on Discord.
 
 ## Time-to-GPT-2 Leaderboard
 
@@ -143,7 +143,6 @@ I've published a number of guides that might contain helpful information, most r
 │   ├── nanochat.png
 │   └── repackage_data_reference.py # Pretraining data shard generation
 ├── nanochat
-│   ├── __init__.py                 # empty
 │   ├── checkpoint_manager.py       # Save/Load model checkpoints
 │   ├── common.py                   # Misc small utilities, quality of life
 │   ├── core_eval.py                # Evaluates base model CORE score (DCLM paper)
@@ -151,6 +150,8 @@ I've published a number of guides that might contain helpful information, most r
 │   ├── dataset.py                  # Download/read utils for pretraining data
 │   ├── engine.py                   # Efficient model inference with KV Cache
 │   ├── execution.py                # Allows the LLM to execute Python code as tool
+│   ├── flash_attention.py          # Flash Attention / SDPA wrapper
+│   ├── fp8.py                      # FP8 Linear layer for H100 training
 │   ├── gpt.py                      # The GPT nn.Module Transformer
 │   ├── logo.svg
 │   ├── loss_eval.py                # Evaluate bits per byte (instead of loss)
@@ -213,7 +214,7 @@ If you find nanochat helpful in your research cite simply as:
   title = {nanochat: The best ChatGPT that \$100 can buy},
   year = {2025},
   publisher = {GitHub},
-  url = {https://github.com/karpathy/nanochat}
+  url = {https://github.com/MoyashiWithDevice/nanochat}
 }
 ```
 
