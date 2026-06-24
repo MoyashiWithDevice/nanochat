@@ -45,7 +45,8 @@ GPT-4 の `\p{N}{1,3}` から `\p{N}{1,2}` に変更されています。
 
 ---
 
-## HuggingFaceTokenizer
+<details>
+<summary><h2>HuggingFaceTokenizer（参照実装）</h2></summary>
 
 HuggingFace `tokenizers` ライブラリのラッパーです。主に参照実装・外部モデルのロードに使用されます。
 
@@ -71,9 +72,12 @@ graph TD
 | `decode(ids)` | トークンIDリストをテキストに変換 |
 | `save(tokenizer_dir)` | `tokenizer.json` として保存 |
 
+</details>
+
 ---
 
-## RustBPETokenizer（推奨実装）
+<details open>
+<summary><h2>RustBPETokenizer（推奨実装）</h2></summary>
 
 `rustbpe` で学習し、`tiktoken` で高速推論を行うハイブリッド実装です。
 
@@ -112,6 +116,8 @@ graph TD
 | `render_conversation(conversation, max_tokens)` | チャット会話をトークン列に変換（SFT用） |
 | `render_for_completion(conversation)` | RL用に会話をトークン列に変換 |
 | `visualize_tokenization(ids, mask)` | デバッグ用カラー表示 |
+
+</details>
 
 ---
 
