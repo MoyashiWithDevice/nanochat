@@ -13,6 +13,7 @@ The whole thing is made as efficient as possible.
 
 import torch
 import torch.nn.functional as F
+import ast
 import signal
 import warnings
 from contextlib import contextmanager
@@ -32,6 +33,34 @@ def timeout(duration, formula):
     yield
     signal.alarm(0)
 
+# AST node types allowed in calculator expressions
+_SAFE_MATH_NODES = (
+    ast.Expression, ast.BinOp, ast.UnaryOp, ast.Constant,
+    ast.Add, ast.Sub, ast.Mult, ast.Div, ast.FloorDiv, ast.Mod,
+    ast.UAdd, ast.USub, ast.Load,
+)
+# Additional nodes needed for string.count() expressions
+_SAFE_STRING_NODES = _SAFE_MATH_NODES + (ast.Call, ast.Attribute,)
+
+def _is_safe_math_ast(node):
+    """Validate that an AST only contains safe arithmetic nodes."""
+    for child in ast.walk(node):
+        if not isinstance(child, _SAFE_MATH_NODES):
+            return False
+    return True
+
+def _is_safe_string_ast(node):
+    """Validate that an AST only contains safe nodes for string.count() expressions."""
+    for child in ast.walk(node):
+        if not isinstance(child, _SAFE_STRING_NODES):
+            return False
+        if isinstance(child, ast.Attribute) and child.attr != 'count':
+            return False
+        if isinstance(child, ast.Call):
+            if not (isinstance(child.func, ast.Attribute) and child.func.attr == 'count'):
+                return False
+    return True
+
 def eval_with_timeout(formula, max_time=3):
     try:
         with timeout(max_time, formula):
@@ -47,36 +76,30 @@ def use_calculator(expr):
     """
     Evaluate a Python expression safely.
     Supports both math expressions and string operations like .count()
+    Uses AST validation to whitelist safe operations instead of blocklists.
     """
     # Remove commas from numbers
     expr = expr.replace(",", "")
+
+    # Parse into AST — reject anything that isn't valid Python
+    try:
+        tree = ast.parse(expr, mode='eval')
+    except SyntaxError:
+        return None
 
     # Check if it's a pure math expression (old behavior)
     if all([x in "0123456789*+-/.() " for x in expr]):
         if "**" in expr:  # disallow power operator
             return None
+        if not _is_safe_math_ast(tree):
+            return None
         return eval_with_timeout(expr)
 
-    # Check if it's a string operation we support
-    # Allow: strings (single/double quotes), .count(), letters, numbers, spaces, parens
-    allowed_chars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'\"()._ "
-    if not all([x in allowed_chars for x in expr]):
-        return None
+    # Check if it's a string.count() operation
+    if '.count(' in expr and _is_safe_string_ast(tree):
+        return eval_with_timeout(expr)
 
-    # Disallow dangerous patterns
-    dangerous_patterns = ['__', 'import', 'exec', 'eval', 'compile', 'open', 'file',
-                         'input', 'raw_input', 'globals', 'locals', 'vars', 'dir',
-                         'getattr', 'setattr', 'delattr', 'hasattr']
-    expr_lower = expr.lower()
-    if any(pattern in expr_lower for pattern in dangerous_patterns):
-        return None
-
-    # Only allow .count() method for now (can expand later)
-    if '.count(' not in expr:
-        return None
-
-    # Evaluate with timeout
-    return eval_with_timeout(expr)
+    return None
 
 # -----------------------------------------------------------------------------
 class KVCache:
