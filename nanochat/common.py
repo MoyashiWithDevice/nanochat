@@ -2,6 +2,7 @@
 Common utilities for nanochat.
 """
 
+import gc
 import os
 import re
 import logging
@@ -276,3 +277,179 @@ def get_peak_flops(device_name: str) -> float:
     # Unknown GPU - return inf so MFU shows as 0% rather than a wrong guess
     logger.warning(f"Peak flops undefined for: {device_name}, MFU will show as 0%")
     return float('inf')
+
+# -----------------------------------------------------------------------------
+# Shared utilities to reduce code duplication across scripts
+
+def build_conversation_tokens(tokenizer, messages):
+    """
+    Encode a list of chat messages into a token sequence for model input.
+    Prepends BOS, wraps each message with its role-specific special tokens,
+    and appends assistant_start to prime the model for generation.
+
+    Args:
+        tokenizer: the tokenizer instance (must support get_bos_token_id, encode_special, encode)
+        messages: list of dicts with 'role' and 'content' keys
+
+    Returns:
+        list of token ids ready for generation
+    """
+    bos = tokenizer.get_bos_token_id()
+    user_start = tokenizer.encode_special("<|user_start|>")
+    user_end = tokenizer.encode_special("<|user_end|>")
+    assistant_start = tokenizer.encode_special("<|assistant_start|>")
+    assistant_end = tokenizer.encode_special("<|assistant_end|>")
+
+    conversation_tokens = [bos]
+    for message in messages:
+        if message["role"] == "user":
+            conversation_tokens.append(user_start)
+            conversation_tokens.extend(tokenizer.encode(message["content"]))
+            conversation_tokens.append(user_end)
+        elif message["role"] == "assistant":
+            conversation_tokens.append(assistant_start)
+            conversation_tokens.extend(tokenizer.encode(message["content"]))
+            conversation_tokens.append(assistant_end)
+    # Prime the assistant for the next response
+    conversation_tokens.append(assistant_start)
+    return conversation_tokens
+
+
+def ddp_all_reduce_sum(values, device, ddp_active):
+    """
+    Reduce one or more scalar values across DDP ranks using SUM.
+    Returns the reduced values as Python ints/floats.
+
+    Args:
+        values: dict mapping names to numeric values (int or float)
+        device: torch device for tensor allocation
+        ddp_active: whether DDP is active (if False, returns values unchanged)
+
+    Returns:
+        dict with same keys, values reduced across ranks
+    """
+    if not ddp_active:
+        return values
+
+    results = {}
+    for name, val in values.items():
+        dtype = torch.long if isinstance(val, int) else torch.float
+        tensor = torch.tensor([val], dtype=dtype, device=device)
+        dist.all_reduce(tensor, op=dist.ReduceOp.SUM)
+        results[name] = tensor.item()
+    return results
+
+
+def init_wandb(project, run_name, config, master_process):
+    """
+    Initialize wandb or return a DummyWandb if logging is disabled.
+
+    Args:
+        project: wandb project name
+        run_name: run name (use "dummy" to disable)
+        config: dict of config to log
+        master_process: whether this is the master process (rank 0)
+
+    Returns:
+        wandb run object or DummyWandb instance
+    """
+    import wandb
+    use_dummy = run_name == "dummy" or not master_process
+    if use_dummy:
+        return DummyWandb()
+    return wandb.init(project=project, name=run_name, config=config)
+
+
+def get_gpu_info(device_type):
+    """
+    Get GPU device name and peak flops for training metrics.
+
+    Args:
+        device_type: "cuda", "cpu", or "mps"
+
+    Returns:
+        (gpu_device_name, gpu_peak_flops) tuple.
+        For non-CUDA, returns (None, float('inf')).
+    """
+    if device_type == "cuda":
+        gpu_device_name = torch.cuda.get_device_name(0)
+        gpu_peak_flops = get_peak_flops(gpu_device_name)
+        print0(f"GPU: {gpu_device_name} | Peak FLOPS (BF16): {gpu_peak_flops:.2e}")
+        return gpu_device_name, gpu_peak_flops
+    return None, float('inf')
+
+
+def init_grad_scaler():
+    """
+    Create a GradScaler if using fp16 compute dtype, otherwise return None.
+
+    Returns:
+        torch.amp.GradScaler or None
+    """
+    scaler = torch.amp.GradScaler() if COMPUTE_DTYPE == torch.float16 else None
+    if scaler is not None:
+        print0("GradScaler enabled for fp16 training")
+    return scaler
+
+
+def optimizer_step_with_scaler(optimizer, scaler, model):
+    """
+    Perform an optimizer step, handling GradScaler if present.
+    In distributed training, ensures all ranks agree on whether to skip the step
+    due to inf/nan gradients.
+
+    Args:
+        optimizer: the optimizer
+        scaler: GradScaler instance or None
+        model: the model (for zero_grad)
+    """
+    if scaler is not None:
+        scaler.unscale_(optimizer)
+        if is_ddp_initialized():
+            for v in scaler._found_inf_per_device(optimizer).values():
+                dist.all_reduce(v, op=dist.ReduceOp.MAX)
+        scaler.step(optimizer)
+        scaler.update()
+    else:
+        optimizer.step()
+    model.zero_grad(set_to_none=True)
+
+
+def manage_gc(step, initial_step=False):
+    """
+    Manage the garbage collector to avoid costly GC pauses during training.
+    Call after each training step.
+
+    On the initial step: collect garbage from setup, freeze surviving objects,
+    and disable automatic GC. Every 5000 steps thereafter: manually collect.
+
+    Args:
+        step: current training step number
+        initial_step: True on the very first step of training (triggers freeze)
+    """
+    if initial_step:
+        gc.collect()
+        gc.freeze()
+        gc.disable()
+    elif step % 5000 == 0:
+        gc.collect()
+
+
+def compute_training_metrics(total_batch_size, dt, num_flops_per_token, gpu_peak_flops, ddp_world_size):
+    """
+    Compute standard training throughput metrics.
+
+    Args:
+        total_batch_size: total tokens per optimization step
+        dt: wall-clock time for the step (seconds)
+        num_flops_per_token: estimated FLOPs per token
+        gpu_peak_flops: peak BF16 FLOPS per GPU
+        ddp_world_size: number of GPUs
+
+    Returns:
+        (tok_per_sec, mfu) tuple where mfu is model flops utilization percentage
+    """
+    tok_per_sec = int(total_batch_size / dt)
+    flops_per_sec = num_flops_per_token * total_batch_size / dt
+    mfu = 100 * flops_per_sec / (gpu_peak_flops * ddp_world_size)
+    return tok_per_sec, mfu
