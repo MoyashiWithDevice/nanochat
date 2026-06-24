@@ -8,9 +8,12 @@ import shutil
 import subprocess
 import socket
 import datetime
+import logging
 import platform
 import psutil
 import torch
+
+logger = logging.getLogger(__name__)
 
 def run_command(cmd):
     """Run a shell command and return output, or None if it fails."""
@@ -22,7 +25,8 @@ def run_command(cmd):
         if result.returncode == 0:
             return ""
         return None
-    except:
+    except (OSError, subprocess.SubprocessError, subprocess.TimeoutExpired) as e:
+        logger.debug(f"Command failed: {cmd!r}: {e}")
         return None
 
 def get_git_info():
@@ -237,8 +241,8 @@ def extract_timestamp(content, prefix):
             time_str = line.split(":", 1)[1].strip()
             try:
                 return datetime.datetime.strptime(time_str, "%Y-%m-%d %H:%M:%S")
-            except:
-                pass
+            except ValueError:
+                logger.debug(f"Failed to parse timestamp: {time_str!r}")
     return None
 
 class Report:

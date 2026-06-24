@@ -11,6 +11,7 @@ Notes:
 The whole thing is made as efficient as possible.
 """
 
+import logging
 import torch
 import torch.nn.functional as F
 import signal
@@ -19,6 +20,8 @@ from contextlib import contextmanager
 from collections import deque
 from nanochat.common import compute_init, autodetect_device_type
 from nanochat.checkpoint_manager import load_model
+
+logger = logging.getLogger(__name__)
 
 # -----------------------------------------------------------------------------
 # Calculator tool helpers
@@ -40,7 +43,7 @@ def eval_with_timeout(formula, max_time=3):
                 return eval(formula, {"__builtins__": {}}, {})
     except Exception as e:
         signal.alarm(0)
-        # print(f"Warning: Failed to eval {formula}, exception: {e}") # it's ok ignore wrong calculator usage
+        logger.debug(f"Calculator eval failed for {formula!r}: {e}")
         return None
 
 def use_calculator(expr):
